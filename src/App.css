@@ -382,6 +382,7 @@ label {
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .primary-button,
@@ -526,9 +527,14 @@ label {
   background: rgba(9, 11, 13, 0.95);
   box-shadow: var(--shadow-glass);
   padding: 1rem;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 0.6rem;
   z-index: 6;
+}
+
+.onboarding-prompt .sheet-actions {
+  justify-content: flex-end;
 }
 
 .wizard-dialog {
@@ -537,7 +543,7 @@ label {
   margin: 0;
   border: 1px solid var(--stroke);
   border-radius: 24px;
-  background: rgba(8, 10, 12, 0.96);
+  background: rgba(8, 10, 12, 0.995);
   box-shadow: var(--shadow-glass);
   padding: 1rem;
   display: grid;
@@ -593,15 +599,26 @@ label {
 .wizard-slider-track {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 300%;
+  will-change: transform;
   transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .wizard-step-panel {
+  width: 100%;
+  min-width: 0;
   min-height: 420px;
   padding: 1rem;
   display: grid;
   gap: 0.7rem;
   align-content: start;
+}
+
+.wizard-dialog::backdrop,
+.onboarding-prompt::backdrop,
+.bottom-sheet::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(2px);
 }
 
 .wizard-step-header {
