@@ -178,6 +178,19 @@ export function SetupWizard({
     setBudgetSheetDraft(countries[0].categoryBudgets);
   }, [budgetSetupCompleted, budgetSheetIndex, countries, open, step]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open]);
+
   const totalAllocated = useMemo(
     () => countries.reduce((sum, country) => sum + getCountryBudgetTotal(country.categoryBudgets), 0),
     [countries],
@@ -201,6 +214,7 @@ export function SetupWizard({
     budgetSetupCompleted;
 
   const currentBudgetCountry = budgetSheetIndex === null ? null : countries[budgetSheetIndex];
+  const isSheetVisible = countrySheetOpen || Boolean(currentBudgetCountry);
 
   function openCountrySheet(index?: number) {
     if (typeof index === "number") {
@@ -341,8 +355,8 @@ export function SetupWizard({
   }
 
   return (
-    <>
-      <dialog className="wizard-dialog" open aria-label="Wizard de creation de voyage">
+    <div className="wizard-overlay">
+      <dialog className={`wizard-dialog ${isSheetVisible ? "sheet-open" : ""}`.trim()} open aria-label="Wizard de creation de voyage">
         <header className="wizard-header">
           <div>
             <p className="wizard-kicker">Creation de voyage</p>
@@ -521,159 +535,163 @@ export function SetupWizard({
       </dialog>
 
       {countrySheetOpen && (
-        <dialog className="bottom-sheet" open aria-label="Ajouter un pays">
-          <header className="bottom-sheet-header">
-            <h3>{countrySheetIndex === null ? "Ajouter un pays" : "Modifier le pays"}</h3>
-          </header>
+        <div className="sheet-overlay">
+          <dialog className="bottom-sheet" open aria-label="Ajouter un pays">
+            <header className="bottom-sheet-header">
+              <h3>{countrySheetIndex === null ? "Ajouter un pays" : "Modifier le pays"}</h3>
+            </header>
 
-          <div className="form-grid">
-            <label>
-              <span>Pays</span>
-              <input
-                value={countrySheetDraft.countryName}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    countryName: event.target.value,
-                  }))
-                }
-                placeholder="Japon"
-              />
-            </label>
-            <label>
-              <span>Code (optionnel)</span>
-              <input
-                value={countrySheetDraft.countryCode}
-                maxLength={2}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    countryCode: event.target.value,
-                  }))
-                }
-                placeholder="JP"
-              />
-            </label>
-            <label>
-              <span>Ville (optionnel)</span>
-              <input
-                value={countrySheetDraft.city}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    city: event.target.value,
-                  }))
-                }
-                placeholder="Tokyo"
-              />
-            </label>
-            <label>
-              <span>Devise</span>
-              <input
-                value={countrySheetDraft.currency}
-                maxLength={3}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    currency: event.target.value,
-                  }))
-                }
-                placeholder="JPY"
-              />
-            </label>
-            <label>
-              <span>Date debut de sejour</span>
-              <input
-                type="date"
-                value={countrySheetDraft.startDate}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    startDate: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              <span>Date fin de sejour</span>
-              <input
-                type="date"
-                value={countrySheetDraft.endDate}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    endDate: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              <span>District (optionnel)</span>
-              <input
-                value={countrySheetDraft.district}
-                onChange={(event) =>
-                  setCountrySheetDraft((prev) => ({
-                    ...prev,
-                    district: event.target.value,
-                  }))
-                }
-                placeholder="Shibuya"
-              />
-            </label>
-          </div>
-
-          <div className="sheet-actions">
-            <button className="ghost-button" type="button" onClick={() => setCountrySheetOpen(false)}>
-              Annuler
-            </button>
-            <button className="primary-button" type="button" onClick={saveCountrySheet}>
-              Enregistrer
-            </button>
-          </div>
-        </dialog>
-      )}
-
-      {budgetSheetIndex !== null && currentBudgetCountry && (
-        <dialog className="bottom-sheet" open aria-label="Configurer le budget du pays">
-          <header className="bottom-sheet-header">
-            <h3>Budget detaille - {currentBudgetCountry.countryName}</h3>
-            <p className="field-hint">
-              {budgetSheetIndex + 1} / {countries.length}
-            </p>
-          </header>
-
-          <div className="form-grid">
-            {CATEGORIES.map((category) => (
-              <label key={category}>
-                <span>{CATEGORY_LABELS[category]}</span>
+            <div className="form-grid">
+              <label>
+                <span>Pays</span>
                 <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={budgetSheetDraft[category]}
+                  value={countrySheetDraft.countryName}
                   onChange={(event) =>
-                    setBudgetSheetDraft((prev) => ({
+                    setCountrySheetDraft((prev) => ({
                       ...prev,
-                      [category]: Number(event.target.value),
+                      countryName: event.target.value,
+                    }))
+                  }
+                  placeholder="Japon"
+                />
+              </label>
+              <label>
+                <span>Code (optionnel)</span>
+                <input
+                  value={countrySheetDraft.countryCode}
+                  maxLength={2}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      countryCode: event.target.value,
+                    }))
+                  }
+                  placeholder="JP"
+                />
+              </label>
+              <label>
+                <span>Ville (optionnel)</span>
+                <input
+                  value={countrySheetDraft.city}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      city: event.target.value,
+                    }))
+                  }
+                  placeholder="Tokyo"
+                />
+              </label>
+              <label>
+                <span>Devise</span>
+                <input
+                  value={countrySheetDraft.currency}
+                  maxLength={3}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      currency: event.target.value,
+                    }))
+                  }
+                  placeholder="JPY"
+                />
+              </label>
+              <label>
+                <span>Date debut de sejour</span>
+                <input
+                  type="date"
+                  value={countrySheetDraft.startDate}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      startDate: event.target.value,
                     }))
                   }
                 />
               </label>
-            ))}
-          </div>
+              <label>
+                <span>Date fin de sejour</span>
+                <input
+                  type="date"
+                  value={countrySheetDraft.endDate}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      endDate: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                <span>District (optionnel)</span>
+                <input
+                  value={countrySheetDraft.district}
+                  onChange={(event) =>
+                    setCountrySheetDraft((prev) => ({
+                      ...prev,
+                      district: event.target.value,
+                    }))
+                  }
+                  placeholder="Shibuya"
+                />
+              </label>
+            </div>
 
-          <p className="field-hint">Total pays: {getCountryBudgetTotal(budgetSheetDraft).toFixed(2)} EUR</p>
-
-          <div className="sheet-actions">
-            <button className="ghost-button" type="button" onClick={() => setBudgetSheetIndex(null)}>
-              Plus tard
-            </button>
-            <button className="primary-button" type="button" onClick={saveBudgetSheet}>
-              {budgetSheetIndex < countries.length - 1 ? "Valider et suivant" : "Valider le dernier pays"}
-            </button>
-          </div>
-        </dialog>
+            <div className="sheet-actions">
+              <button className="ghost-button" type="button" onClick={() => setCountrySheetOpen(false)}>
+                Annuler
+              </button>
+              <button className="primary-button" type="button" onClick={saveCountrySheet}>
+                Enregistrer
+              </button>
+            </div>
+          </dialog>
+        </div>
       )}
-    </>
+
+      {budgetSheetIndex !== null && currentBudgetCountry && (
+        <div className="sheet-overlay">
+          <dialog className="bottom-sheet" open aria-label="Configurer le budget du pays">
+            <header className="bottom-sheet-header">
+              <h3>Budget detaille - {currentBudgetCountry.countryName}</h3>
+              <p className="field-hint">
+                {budgetSheetIndex + 1} / {countries.length}
+              </p>
+            </header>
+
+            <div className="form-grid">
+              {CATEGORIES.map((category) => (
+                <label key={category}>
+                  <span>{CATEGORY_LABELS[category]}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={budgetSheetDraft[category]}
+                    onChange={(event) =>
+                      setBudgetSheetDraft((prev) => ({
+                        ...prev,
+                        [category]: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+
+            <p className="field-hint">Total pays: {getCountryBudgetTotal(budgetSheetDraft).toFixed(2)} EUR</p>
+
+            <div className="sheet-actions">
+              <button className="ghost-button" type="button" onClick={() => setBudgetSheetIndex(null)}>
+                Plus tard
+              </button>
+              <button className="primary-button" type="button" onClick={saveBudgetSheet}>
+                {budgetSheetIndex < countries.length - 1 ? "Valider et suivant" : "Valider le dernier pays"}
+              </button>
+            </div>
+          </dialog>
+        </div>
+      )}
+    </div>
   );
 }
