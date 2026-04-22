@@ -6,6 +6,22 @@ import type {
 } from "../../models/domain";
 import { diffDays } from "../../utils/dates";
 
+function matchesActiveTrip(
+  state: TravelPlanState,
+  itemTripId: string | undefined,
+): boolean {
+  if (!state.activeTripId) {
+    return itemTripId === undefined;
+  }
+
+  if (!itemTripId) {
+    // Legacy entries created before trip scoping are shown only when there is a single trip.
+    return state.trips.length <= 1;
+  }
+
+  return itemTripId === state.activeTripId;
+}
+
 export function findCountryPlan(
   state: TravelPlanState,
   countryCode: string,
@@ -15,7 +31,7 @@ export function findCountryPlan(
 
 export function getCountryExpenses(state: TravelPlanState, countryCode: string): Expense[] {
   return state.expenses
-    .filter((expense) => expense.countryCode === countryCode)
+    .filter((expense) => matchesActiveTrip(state, expense.tripId) && expense.countryCode === countryCode)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
@@ -28,7 +44,7 @@ export function sumCountryExpensesEuro(state: TravelPlanState, countryCode: stri
 
 export function sumCountryForecastEuro(state: TravelPlanState, countryCode: string): number {
   return state.forecasts
-    .filter((forecast) => forecast.countryCode === countryCode)
+    .filter((forecast) => matchesActiveTrip(state, forecast.tripId) && forecast.countryCode === countryCode)
     .reduce((total, forecast) => total + forecast.amountInEuro, 0);
 }
 
@@ -88,7 +104,9 @@ export function countryBudgetPace(state: TravelPlanState, countryCode: string): 
 }
 
 export function globalRemainingBudgetEuro(state: TravelPlanState): number {
-  const totalSpent = state.expenses.reduce((total, expense) => total + expense.amountInEuro, 0);
+  const totalSpent = state.expenses
+    .filter((expense) => matchesActiveTrip(state, expense.tripId))
+    .reduce((total, expense) => total + expense.amountInEuro, 0);
   return state.trip.totalBudget - totalSpent;
 }
 

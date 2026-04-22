@@ -2,6 +2,7 @@
   "app.title": "TravelPlan",
   "app.subtitle": "Manage your long-trip budget with a premium experience.",
   "tab.home": "HOME",
+  "tab.trips": "TRIPS",
   "tab.stats": "STATS",
   "tab.forecast": "FORECAST",
   "tab.rewind": "REWIND",

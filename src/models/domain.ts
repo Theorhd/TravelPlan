@@ -1,5 +1,5 @@
 export type Language = "fr-FR" | "en-US";
-export type TabKey = "home" | "stats" | "forecast" | "rewind";
+export type TabKey = "home" | "stats" | "forecast" | "rewind" | "trips";
 export type LlmProviderKind = "none" | "openai" | "mistral" | "claude";
 export type ExpenseSource = "manual" | "quick-add" | "ocr";
 
@@ -37,6 +37,7 @@ export interface CountryBudgetPlan {
 export interface TripPlan {
   id: string;
   title: string;
+  description?: string;
   startDate: string;
   endDate: string;
   totalBudget: number;
@@ -45,6 +46,7 @@ export interface TripPlan {
 
 export interface Expense {
   id: string;
+  tripId?: string;
   amount: number;
   currency: string;
   amountInEuro: number;
@@ -65,6 +67,7 @@ export interface Expense {
 
 export interface ForecastExpense {
   id: string;
+  tripId?: string;
   amount: number;
   currency: string;
   amountInEuro: number;
@@ -115,6 +118,8 @@ export interface TravelPlanState {
   version: number;
   user: TravelUser;
   travelers: Traveler[];
+  trips: TripPlan[];
+  activeTripId: string | null;
   trip: TripPlan;
   expenses: Expense[];
   forecasts: ForecastExpense[];
@@ -185,6 +190,7 @@ export interface AddForecastInput {
 
 export interface SetupTripInput {
   title: string;
+  description?: string;
   startDate: string;
   endDate: string;
   totalBudget: number;

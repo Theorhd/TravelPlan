@@ -1,6 +1,28 @@
-import { useMemo, useState } from "react";
-import type { CountryBudgetPlan, ExpenseCategory, SetupTripInput, TripPlan } from "../../models/domain";
-import { useI18n } from "../../i18n";
+import { useEffect, useMemo, useState } from "react";
+import type { CountryBudgetPlan, ExpenseCategory, SetupTripInput } from "../../models/domain";
+
+type WizardStep = 1 | 2 | 3;
+
+type CountryDraft = {
+  countryName: string;
+  countryCode: string;
+  city: string;
+  district: string;
+  currency: string;
+  startDate: string;
+  endDate: string;
+  categoryBudgets: Record<ExpenseCategory, number>;
+};
+
+type CountrySheetDraft = {
+  countryName: string;
+  countryCode: string;
+  city: string;
+  district: string;
+  currency: string;
+  startDate: string;
+  endDate: string;
+};
 
 const CATEGORIES: ExpenseCategory[] = [
   "lodging",
@@ -11,245 +33,647 @@ const CATEGORIES: ExpenseCategory[] = [
   "other",
 ];
 
-type CountryDraft = {
-  countryCode: string;
-  countryName: string;
-  city: string;
-  district: string;
-  currency: string;
-  startDate: string;
-  endDate: string;
-  budgetTotal: number;
+const CATEGORY_LABELS: Record<ExpenseCategory, string> = {
+  lodging: "Logement",
+  food: "Nourriture",
+  transport: "Transport",
+  flights: "Vols",
+  activities: "Activites",
+  other: "Autres",
 };
 
-function draftFromCountry(country: CountryBudgetPlan): CountryDraft {
+const CATEGORY_WEIGHTS: Record<ExpenseCategory, number> = {
+  lodging: 0.32,
+  food: 0.23,
+  transport: 0.14,
+  flights: 0.15,
+  activities: 0.1,
+  other: 0.06,
+};
+
+function createDefaultCategoryBudgets(total: number): Record<ExpenseCategory, number> {
+  const safeTotal = Math.max(total, 1);
+
   return {
-    countryCode: country.countryCode,
+    lodging: Number((safeTotal * CATEGORY_WEIGHTS.lodging).toFixed(2)),
+    food: Number((safeTotal * CATEGORY_WEIGHTS.food).toFixed(2)),
+    transport: Number((safeTotal * CATEGORY_WEIGHTS.transport).toFixed(2)),
+    flights: Number((safeTotal * CATEGORY_WEIGHTS.flights).toFixed(2)),
+    activities: Number((safeTotal * CATEGORY_WEIGHTS.activities).toFixed(2)),
+    other: Number((safeTotal * CATEGORY_WEIGHTS.other).toFixed(2)),
+  };
+}
+
+function getCountryBudgetTotal(categoryBudgets: Record<ExpenseCategory, number>): number {
+  return CATEGORIES.reduce((sum, category) => sum + categoryBudgets[category], 0);
+}
+
+function normalizeCountryCode(countryName: string, currentCode: string): string {
+  const fromInput = currentCode.trim().slice(0, 2).toUpperCase();
+  if (fromInput.length === 2) {
+    return fromInput;
+  }
+
+  const compactName = countryName.replaceAll(/[^A-Za-z]/g, "").toUpperCase();
+  if (compactName.length >= 2) {
+    return compactName.slice(0, 2);
+  }
+
+  return "ZZ";
+}
+
+function toCountryPlan(country: CountryDraft): CountryBudgetPlan {
+  const budgetTotal = Number(getCountryBudgetTotal(country.categoryBudgets).toFixed(2));
+
+  return {
+    countryCode: normalizeCountryCode(country.countryName, country.countryCode),
+    countryName: country.countryName.trim(),
+    city: country.city.trim() || country.countryName.trim(),
+    district: country.district.trim(),
+    currency: (country.currency.trim() || "EUR").toUpperCase(),
+    startDate: country.startDate,
+    endDate: country.endDate,
+    budgetTotal,
+    categoryBudgets: country.categoryBudgets,
+  };
+}
+
+function toCountryDraft(country: CountryBudgetPlan): CountryDraft {
+  return {
     countryName: country.countryName,
+    countryCode: country.countryCode,
     city: country.city,
     district: country.district ?? "",
     currency: country.currency,
     startDate: country.startDate,
     endDate: country.endDate,
-    budgetTotal: country.budgetTotal,
-  };
-}
-
-function toCountryPlan(draft: CountryDraft): CountryBudgetPlan {
-  const categoryShare = draft.budgetTotal / CATEGORIES.length;
-
-  return {
-    countryCode: draft.countryCode.toUpperCase(),
-    countryName: draft.countryName,
-    currency: draft.currency.toUpperCase(),
-    city: draft.city,
-    district: draft.district,
-    startDate: draft.startDate,
-    endDate: draft.endDate,
-    budgetTotal: draft.budgetTotal,
-    categoryBudgets: {
-      lodging: Number((categoryShare * 1.6).toFixed(2)),
-      food: Number((categoryShare * 1.2).toFixed(2)),
-      transport: Number((categoryShare * 0.9).toFixed(2)),
-      flights: Number((categoryShare * 0.8).toFixed(2)),
-      activities: Number((categoryShare * 1).toFixed(2)),
-      other: Number((categoryShare * 0.5).toFixed(2)),
-    },
+    categoryBudgets: country.categoryBudgets,
   };
 }
 
 export function SetupWizard({
-  userId,
-  trip,
-  onUpdateUserId,
-  onConfigureTrip,
-  onAddTraveler,
+  open,
+  onClose,
+  onComplete,
+  seed,
 }: Readonly<{
-  userId: string;
-  trip: TripPlan;
-  onUpdateUserId: (id: string) => void;
-  onConfigureTrip: (input: SetupTripInput) => void;
-  onAddTraveler: (id: string) => void;
+  open: boolean;
+  onClose: () => void;
+  onComplete: (input: SetupTripInput) => void;
+  seed?: Partial<SetupTripInput>;
 }>) {
-  const { t } = useI18n();
+  const today = new Date().toISOString().slice(0, 10);
+  const [step, setStep] = useState<WizardStep>(1);
+  const [tripName, setTripName] = useState("");
+  const [tripDescription, setTripDescription] = useState("");
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
+  const [globalBudget, setGlobalBudget] = useState(0);
+  const [countries, setCountries] = useState<CountryDraft[]>([]);
 
-  const [tripName, setTripName] = useState(trip.title);
-  const [startDate, setStartDate] = useState(trip.startDate);
-  const [endDate, setEndDate] = useState(trip.endDate);
-  const [totalBudget, setTotalBudget] = useState(trip.totalBudget);
-  const [travelerInput, setTravelerInput] = useState("");
-  const [countries, setCountries] = useState<CountryDraft[]>(trip.countries.map(draftFromCountry));
+  const [countrySheetOpen, setCountrySheetOpen] = useState(false);
+  const [countrySheetIndex, setCountrySheetIndex] = useState<number | null>(null);
+  const [countrySheetDraft, setCountrySheetDraft] = useState<CountrySheetDraft>({
+    countryName: "",
+    countryCode: "",
+    city: "",
+    district: "",
+    currency: "EUR",
+    startDate: today,
+    endDate: today,
+  });
 
-  const totalCountryBudget = useMemo(
-    () => countries.reduce((sum, country) => sum + country.budgetTotal, 0),
+  const [budgetSheetIndex, setBudgetSheetIndex] = useState<number | null>(null);
+  const [budgetSheetDraft, setBudgetSheetDraft] = useState<Record<ExpenseCategory, number>>(
+    createDefaultCategoryBudgets(1000),
+  );
+  const [budgetSetupCompleted, setBudgetSetupCompleted] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const seedCountries = seed?.countries?.map(toCountryDraft) ?? [];
+
+    setStep(1);
+    setTripName(seed?.title ?? "");
+    setTripDescription(seed?.description ?? "");
+    setStartDate(seed?.startDate ?? today);
+    setEndDate(seed?.endDate ?? today);
+    setGlobalBudget(seed?.totalBudget ?? 0);
+    setCountries(seedCountries);
+    setCountrySheetOpen(false);
+    setCountrySheetIndex(null);
+    setBudgetSheetIndex(null);
+    setBudgetSetupCompleted(false);
+  }, [open, seed, today]);
+
+  useEffect(() => {
+    if (!open || step !== 3 || countries.length === 0 || budgetSetupCompleted || budgetSheetIndex !== null) {
+      return;
+    }
+
+    setBudgetSheetIndex(0);
+    setBudgetSheetDraft(countries[0].categoryBudgets);
+  }, [budgetSetupCompleted, budgetSheetIndex, countries, open, step]);
+
+  const totalAllocated = useMemo(
+    () => countries.reduce((sum, country) => sum + getCountryBudgetTotal(country.categoryBudgets), 0),
     [countries],
   );
 
-  function addCountry() {
-    const last = countries.at(-1);
-    const nextStart = last?.endDate ?? startDate;
-    setCountries((prev) => [
-      ...prev,
-      {
-        countryCode: "US",
-        countryName: "United States",
-        city: "New York",
-        district: "Manhattan",
-        currency: "USD",
-        startDate: nextStart,
-        endDate: nextStart,
-        budgetTotal: 1000,
-      },
-    ]);
+  const isStep1Valid =
+    tripName.trim().length > 0 &&
+    tripDescription.trim().length > 0 &&
+    startDate.length > 0 &&
+    endDate.length > 0 &&
+    endDate >= startDate &&
+    globalBudget > 0;
+
+  const isStep2Valid =
+    countries.length > 0 &&
+    countries.every((country) => country.countryName.trim().length > 0 && country.endDate >= country.startDate);
+
+  const isStep3Valid =
+    countries.length > 0 &&
+    countries.every((country) => getCountryBudgetTotal(country.categoryBudgets) > 0) &&
+    budgetSetupCompleted;
+
+  const currentBudgetCountry = budgetSheetIndex === null ? null : countries[budgetSheetIndex];
+
+  function openCountrySheet(index?: number) {
+    if (typeof index === "number") {
+      const country = countries[index];
+      if (!country) {
+        return;
+      }
+
+      setCountrySheetIndex(index);
+      setCountrySheetDraft({
+        countryName: country.countryName,
+        countryCode: country.countryCode,
+        city: country.city,
+        district: country.district,
+        currency: country.currency,
+        startDate: country.startDate,
+        endDate: country.endDate,
+      });
+      setCountrySheetOpen(true);
+      return;
+    }
+
+    const nextStartDate = countries.at(-1)?.endDate ?? startDate;
+    setCountrySheetIndex(null);
+    setCountrySheetDraft({
+      countryName: "",
+      countryCode: "",
+      city: "",
+      district: "",
+      currency: "EUR",
+      startDate: nextStartDate,
+      endDate: nextStartDate,
+    });
+    setCountrySheetOpen(true);
   }
 
-  function updateCountry(index: number, patch: Partial<CountryDraft>) {
-    setCountries((prev) => prev.map((country, i) => (i === index ? { ...country, ...patch } : country)));
+  function saveCountrySheet() {
+    if (!countrySheetDraft.countryName.trim()) {
+      return;
+    }
+
+    const additionalCountryCount = countrySheetIndex === null ? 1 : 0;
+    const suggestedBudget = globalBudget > 0
+      ? globalBudget / Math.max(countries.length + additionalCountryCount, 1)
+      : 1000;
+
+    const nextCountry: CountryDraft = {
+      countryName: countrySheetDraft.countryName.trim(),
+      countryCode: normalizeCountryCode(countrySheetDraft.countryName, countrySheetDraft.countryCode),
+      city: countrySheetDraft.city.trim(),
+      district: countrySheetDraft.district.trim(),
+      currency: (countrySheetDraft.currency.trim() || "EUR").toUpperCase(),
+      startDate: countrySheetDraft.startDate,
+      endDate: countrySheetDraft.endDate,
+      categoryBudgets: createDefaultCategoryBudgets(suggestedBudget),
+    };
+
+    setCountries((prev) => {
+      if (countrySheetIndex === null) {
+        return [...prev, nextCountry];
+      }
+
+      return prev.map((country, index) => {
+        if (index !== countrySheetIndex) {
+          return country;
+        }
+
+        return {
+          ...country,
+          ...nextCountry,
+          categoryBudgets: country.categoryBudgets,
+        };
+      });
+    });
+
+    setCountrySheetOpen(false);
   }
 
-  function saveSetup() {
-    onConfigureTrip({
-      title: tripName,
+  function removeCountry(index: number) {
+    setCountries((prev) => prev.filter((_, countryIndex) => countryIndex !== index));
+  }
+
+  function saveBudgetSheet() {
+    if (budgetSheetIndex === null) {
+      return;
+    }
+
+    const nextBudgets = CATEGORIES.reduce<Record<ExpenseCategory, number>>((accumulator, category) => {
+      accumulator[category] = Math.max(0, Number(budgetSheetDraft[category]) || 0);
+      return accumulator;
+    }, {} as Record<ExpenseCategory, number>);
+
+    setCountries((prev) =>
+      prev.map((country, index) => {
+        if (index !== budgetSheetIndex) {
+          return country;
+        }
+
+        return {
+          ...country,
+          categoryBudgets: nextBudgets,
+        };
+      }),
+    );
+
+    const nextIndex = budgetSheetIndex + 1;
+    if (nextIndex < countries.length) {
+      const nextCountry = countries[nextIndex];
+      setBudgetSheetIndex(nextIndex);
+      setBudgetSheetDraft(nextCountry.categoryBudgets);
+      return;
+    }
+
+    setBudgetSheetIndex(null);
+    setBudgetSetupCompleted(true);
+  }
+
+  function finalizeWizard() {
+    if (!isStep1Valid || !isStep2Valid || !isStep3Valid) {
+      return;
+    }
+
+    const countryPlans = countries.map(toCountryPlan);
+
+    onComplete({
+      title: tripName.trim(),
+      description: tripDescription.trim(),
       startDate,
       endDate,
-      totalBudget,
-      countries: countries.map(toCountryPlan),
+      totalBudget: globalBudget,
+      countries: countryPlans,
     });
+    onClose();
+  }
+
+  if (!open) {
+    return null;
   }
 
   return (
-    <section className="setup-wizard">
-      <h3>{t("setup.title")}</h3>
+    <>
+      <dialog className="wizard-dialog" open aria-label="Wizard de creation de voyage">
+        <header className="wizard-header">
+          <div>
+            <p className="wizard-kicker">Creation de voyage</p>
+            <h2>Wizard en 3 etapes</h2>
+          </div>
+          <button className="ghost-button" type="button" onClick={onClose}>
+            Fermer
+          </button>
+        </header>
 
-      <div className="form-grid">
-        <label>
-          <span>{t("setup.account")}</span>
-          <input value={userId} onChange={(e) => onUpdateUserId(e.target.value)} />
-        </label>
+        <div className="wizard-progress">
+          {[1, 2, 3].map((item) => (
+            <span key={item} className={`wizard-progress-dot ${step >= item ? "active" : ""}`.trim()}>
+              {item}
+            </span>
+          ))}
+        </div>
 
-        <label>
-          <span>{t("setup.tripName")}</span>
-          <input value={tripName} onChange={(e) => setTripName(e.target.value)} />
-        </label>
+        <div className="wizard-slider-window">
+          <div className="wizard-slider-track" style={{ transform: `translateX(-${(step - 1) * (100 / 3)}%)` }}>
+            <section className="wizard-step-panel">
+              <h3>Etape 1 - Informations globales</h3>
+              <p className="field-hint">Nom, description, dates et budget global du voyage.</p>
 
-        <label>
-          <span>{t("setup.startDate")}</span>
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-        </label>
+              <div className="form-grid">
+                <label>
+                  <span>Nom du voyage</span>
+                  <input value={tripName} onChange={(event) => setTripName(event.target.value)} />
+                </label>
+                <label>
+                  <span>Description</span>
+                  <textarea value={tripDescription} rows={3} onChange={(event) => setTripDescription(event.target.value)} />
+                </label>
+                <label>
+                  <span>Date debut</span>
+                  <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+                </label>
+                <label>
+                  <span>Date fin</span>
+                  <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                </label>
+                <label>
+                  <span>Budget global disponible</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={globalBudget}
+                    onChange={(event) => setGlobalBudget(Number(event.target.value))}
+                  />
+                </label>
+              </div>
 
-        <label>
-          <span>{t("setup.endDate")}</span>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-        </label>
+              <div className="sheet-actions wizard-actions">
+                <button className="primary-button" type="button" disabled={!isStep1Valid} onClick={() => setStep(2)}>
+                  Valider et continuer
+                </button>
+              </div>
+            </section>
 
-        <label>
-          <span>{t("setup.totalBudget")}</span>
-          <input type="number" step="0.01" value={totalBudget} onChange={(e) => setTotalBudget(Number(e.target.value))} />
-        </label>
+            <section className="wizard-step-panel">
+              <div className="wizard-step-header">
+                <div>
+                  <h3>Etape 2 - Itineraire</h3>
+                  <p className="field-hint">Ajoutez les pays traverses avec leurs dates de sejour.</p>
+                </div>
+                <button className="primary-button wizard-plus" type="button" onClick={() => openCountrySheet()}>
+                  +
+                </button>
+              </div>
 
-        <label>
-          <span>{t("setup.addTraveler")}</span>
-          <div className="inline-field">
-            <input
-              value={travelerInput}
-              onChange={(e) => setTravelerInput(e.target.value)}
-              placeholder="@travelerid"
-            />
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => {
-                onAddTraveler(travelerInput);
-                setTravelerInput("");
-              }}
-            >
-              +
+              {countries.length === 0 && (
+                <article className="wizard-empty-state">
+                  <p>Aucun pays ajoute pour le moment.</p>
+                  <button className="ghost-button" type="button" onClick={() => openCountrySheet()}>
+                    Ajouter un pays
+                  </button>
+                </article>
+              )}
+
+              <div className="country-planner">
+                {countries.map((country, index) => (
+                  <article key={`${country.countryCode}-${country.startDate}-${index}`} className="country-draft">
+                    <div className="country-draft-header">
+                      <h4>{country.countryName}</h4>
+                      <p className="field-hint">
+                        {country.startDate} → {country.endDate}
+                      </p>
+                    </div>
+                    <div className="sheet-actions">
+                      <button className="ghost-button" type="button" onClick={() => openCountrySheet(index)}>
+                        Editer
+                      </button>
+                      <button className="ghost-button" type="button" onClick={() => removeCountry(index)}>
+                        Supprimer
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="sheet-actions wizard-actions">
+                <button className="ghost-button" type="button" onClick={() => setStep(1)}>
+                  Retour
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={!isStep2Valid}
+                  onClick={() => {
+                    setBudgetSetupCompleted(false);
+                    setBudgetSheetIndex(0);
+                    setBudgetSheetDraft(countries[0]?.categoryBudgets ?? createDefaultCategoryBudgets(1000));
+                    setStep(3);
+                  }}
+                >
+                  Valider l'itineraire
+                </button>
+              </div>
+            </section>
+
+            <section className="wizard-step-panel">
+              <h3>Etape 3 - Ventilation budgetaire</h3>
+              <p className="field-hint">
+                Une bottom sheet s'ouvre successivement pour chaque pays afin de renseigner le detail des categories.
+              </p>
+
+              <div className="wizard-budget-list">
+                {countries.map((country, index) => {
+                  const countryBudget = getCountryBudgetTotal(country.categoryBudgets);
+                  return (
+                    <article key={`${country.countryCode}-budget-${index}`} className="country-draft">
+                      <h4>{country.countryName}</h4>
+                      <p className="field-hint">Budget configure: {countryBudget.toFixed(2)} EUR</p>
+                    </article>
+                  );
+                })}
+              </div>
+
+              <p className="field-hint">
+                Total alloue: {totalAllocated.toFixed(2)} EUR / Budget global: {globalBudget.toFixed(2)} EUR
+              </p>
+
+              {!budgetSetupCompleted && (
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setBudgetSheetIndex(0);
+                    setBudgetSheetDraft(countries[0]?.categoryBudgets ?? createDefaultCategoryBudgets(1000));
+                  }}
+                >
+                  Relancer la configuration des budgets
+                </button>
+              )}
+
+              <div className="sheet-actions wizard-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setStep(2);
+                    setBudgetSheetIndex(null);
+                    setBudgetSetupCompleted(false);
+                  }}
+                >
+                  Retour
+                </button>
+                <button className="primary-button" type="button" disabled={!isStep3Valid} onClick={finalizeWizard}>
+                  Finaliser le voyage
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </dialog>
+
+      {countrySheetOpen && (
+        <dialog className="bottom-sheet" open aria-label="Ajouter un pays">
+          <header className="bottom-sheet-header">
+            <h3>{countrySheetIndex === null ? "Ajouter un pays" : "Modifier le pays"}</h3>
+          </header>
+
+          <div className="form-grid">
+            <label>
+              <span>Pays</span>
+              <input
+                value={countrySheetDraft.countryName}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    countryName: event.target.value,
+                  }))
+                }
+                placeholder="Japon"
+              />
+            </label>
+            <label>
+              <span>Code (optionnel)</span>
+              <input
+                value={countrySheetDraft.countryCode}
+                maxLength={2}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    countryCode: event.target.value,
+                  }))
+                }
+                placeholder="JP"
+              />
+            </label>
+            <label>
+              <span>Ville (optionnel)</span>
+              <input
+                value={countrySheetDraft.city}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    city: event.target.value,
+                  }))
+                }
+                placeholder="Tokyo"
+              />
+            </label>
+            <label>
+              <span>Devise</span>
+              <input
+                value={countrySheetDraft.currency}
+                maxLength={3}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    currency: event.target.value,
+                  }))
+                }
+                placeholder="JPY"
+              />
+            </label>
+            <label>
+              <span>Date debut de sejour</span>
+              <input
+                type="date"
+                value={countrySheetDraft.startDate}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    startDate: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>Date fin de sejour</span>
+              <input
+                type="date"
+                value={countrySheetDraft.endDate}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    endDate: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>District (optionnel)</span>
+              <input
+                value={countrySheetDraft.district}
+                onChange={(event) =>
+                  setCountrySheetDraft((prev) => ({
+                    ...prev,
+                    district: event.target.value,
+                  }))
+                }
+                placeholder="Shibuya"
+              />
+            </label>
+          </div>
+
+          <div className="sheet-actions">
+            <button className="ghost-button" type="button" onClick={() => setCountrySheetOpen(false)}>
+              Annuler
+            </button>
+            <button className="primary-button" type="button" onClick={saveCountrySheet}>
+              Enregistrer
             </button>
           </div>
-        </label>
-      </div>
+        </dialog>
+      )}
 
-      <div className="country-planner">
-        {countries.map((country, index) => (
-          <article key={`${country.countryCode}-${index}`} className="country-draft">
-            <h4>
-              {country.countryName || `Country ${index + 1}`}
-            </h4>
-            <div className="form-grid">
-              <label>
-                <span>Code</span>
-                <input
-                  value={country.countryCode}
-                  maxLength={2}
-                  onChange={(e) => updateCountry(index, { countryCode: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>Name</span>
-                <input
-                  value={country.countryName}
-                  onChange={(e) => updateCountry(index, { countryName: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>City</span>
-                <input value={country.city} onChange={(e) => updateCountry(index, { city: e.target.value })} />
-              </label>
-              <label>
-                <span>District</span>
-                <input
-                  value={country.district}
-                  onChange={(e) => updateCountry(index, { district: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>Currency</span>
-                <input
-                  value={country.currency}
-                  maxLength={3}
-                  onChange={(e) => updateCountry(index, { currency: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>Budget</span>
+      {budgetSheetIndex !== null && currentBudgetCountry && (
+        <dialog className="bottom-sheet" open aria-label="Configurer le budget du pays">
+          <header className="bottom-sheet-header">
+            <h3>Budget detaille - {currentBudgetCountry.countryName}</h3>
+            <p className="field-hint">
+              {budgetSheetIndex + 1} / {countries.length}
+            </p>
+          </header>
+
+          <div className="form-grid">
+            {CATEGORIES.map((category) => (
+              <label key={category}>
+                <span>{CATEGORY_LABELS[category]}</span>
                 <input
                   type="number"
+                  min={0}
                   step="0.01"
-                  value={country.budgetTotal}
-                  onChange={(e) => updateCountry(index, { budgetTotal: Number(e.target.value) })}
+                  value={budgetSheetDraft[category]}
+                  onChange={(event) =>
+                    setBudgetSheetDraft((prev) => ({
+                      ...prev,
+                      [category]: Number(event.target.value),
+                    }))
+                  }
                 />
               </label>
-              <label>
-                <span>Start</span>
-                <input
-                  type="date"
-                  value={country.startDate}
-                  onChange={(e) => updateCountry(index, { startDate: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>End</span>
-                <input
-                  type="date"
-                  value={country.endDate}
-                  onChange={(e) => updateCountry(index, { endDate: e.target.value })}
-                />
-              </label>
-            </div>
-          </article>
-        ))}
-      </div>
+            ))}
+          </div>
 
-      <div className="sheet-actions">
-        <button className="ghost-button" type="button" onClick={addCountry}>
-          {t("setup.addCountry")}
-        </button>
-        <button className="primary-button" type="button" onClick={saveSetup}>
-          {t("setup.finish")}
-        </button>
-      </div>
+          <p className="field-hint">Total pays: {getCountryBudgetTotal(budgetSheetDraft).toFixed(2)} EUR</p>
 
-      <p className="field-hint">Planned countries budget total: {totalCountryBudget.toFixed(2)} EUR</p>
-    </section>
+          <div className="sheet-actions">
+            <button className="ghost-button" type="button" onClick={() => setBudgetSheetIndex(null)}>
+              Plus tard
+            </button>
+            <button className="primary-button" type="button" onClick={saveBudgetSheet}>
+              {budgetSheetIndex < countries.length - 1 ? "Valider et suivant" : "Valider le dernier pays"}
+            </button>
+          </div>
+        </dialog>
+      )}
+    </>
   );
 }

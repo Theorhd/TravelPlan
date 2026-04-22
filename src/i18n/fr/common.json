@@ -2,6 +2,7 @@
   "app.title": "TravelPlan",
   "app.subtitle": "Pilotez votre budget tour du monde en mode premium.",
   "tab.home": "HOME",
+  "tab.trips": "TRIPS",
   "tab.stats": "STATS",
   "tab.forecast": "PREVISION",
   "tab.rewind": "REWIND",

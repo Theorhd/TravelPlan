@@ -1,7 +1,7 @@
 import type { TabKey } from "../../models/domain";
 import { useI18n } from "../../i18n";
 
-const TAB_KEYS: TabKey[] = ["home", "stats", "forecast", "rewind"];
+const TAB_KEYS: TabKey[] = ["home", "trips", "stats", "forecast", "rewind"];
 
 export function TabBar({
   activeTab,
@@ -10,7 +10,7 @@ export function TabBar({
   const { t } = useI18n();
 
   return (
-    <nav className="tab-bar" aria-label="Main navigation">
+    <nav className="tab-bar" aria-label="Navigation principale">
       {TAB_KEYS.map((tab) => (
         <button
           key={tab}

@@ -14,6 +14,7 @@ import type {
   BorderAdjustmentMode,
   GeoContext,
   SetupTripInput,
+  TripPlan,
   TravelPlanState,
 } from "../../models/domain";
 import { createStorageGateway } from "../../data/db/createStorageGateway";
@@ -28,8 +29,11 @@ type TravelPlanContextValue = {
   state: TravelPlanState;
   ready: boolean;
   error: string | null;
+  updateUserProfile: (profile: { id: string; displayName: string }) => void;
   updateUserId: (value: string) => void;
   configureTrip: (input: SetupTripInput) => void;
+  createTrip: (input: SetupTripInput) => void;
+  switchTrip: (tripId: string) => void;
   addTraveler: (travelerId: string) => void;
   addExpense: (input: AddExpenseInput) => Promise<void>;
   addForecast: (input: AddForecastInput) => void;
@@ -42,11 +46,84 @@ type TravelPlanContextValue = {
 
 const TravelPlanContext = createContext<TravelPlanContextValue | null>(null);
 
+function createEmptyTrip(referenceDate: string): TripPlan {
+  return {
+    id: "",
+    title: "",
+    description: "",
+    startDate: referenceDate,
+    endDate: referenceDate,
+    totalBudget: 0,
+    countries: [],
+  };
+}
+
+function buildTripFromSetup(input: SetupTripInput, tripId: string): TripPlan {
+  const normalizedCountries = input.countries.map((country) => ({
+    ...country,
+    countryCode: country.countryCode.toUpperCase(),
+    currency: country.currency.toUpperCase(),
+  }));
+
+  const derivedTotal = normalizedCountries.reduce((sum, country) => sum + country.budgetTotal, 0);
+
+  return {
+    id: tripId,
+    title: input.title.trim() || "Untitled Trip",
+    description: input.description?.trim() ?? "",
+    startDate: input.startDate,
+    endDate: input.endDate,
+    totalBudget: input.totalBudget > 0 ? input.totalBudget : Number(derivedTotal.toFixed(2)),
+    countries: normalizedCountries,
+  };
+}
+
+function syncTripCatalog(catalog: TripPlan[], activeTrip: TripPlan): TripPlan[] {
+  if (!activeTrip.id) {
+    return catalog;
+  }
+
+  if (!catalog.some((trip) => trip.id === activeTrip.id)) {
+    return [...catalog, activeTrip];
+  }
+
+  return catalog.map((trip) => (trip.id === activeTrip.id ? activeTrip : trip));
+}
+
+function normalizeLoadedState(loadedState: TravelPlanState): TravelPlanState {
+  const maybeLegacy = loadedState as TravelPlanState & {
+    trips?: TripPlan[];
+    activeTripId?: string | null;
+  };
+
+  const catalog = Array.isArray(maybeLegacy.trips)
+    ? maybeLegacy.trips
+    : maybeLegacy.trip && maybeLegacy.trip.countries.length > 0
+      ? [maybeLegacy.trip]
+      : [];
+
+  const activeTripId =
+    maybeLegacy.activeTripId ??
+    (maybeLegacy.trip && catalog.some((trip) => trip.id === maybeLegacy.trip.id)
+      ? maybeLegacy.trip.id
+      : catalog[0]?.id ?? null);
+
+  const today = toIsoDate(new Date());
+  const activeTrip = activeTripId
+    ? catalog.find((trip) => trip.id === activeTripId) ?? createEmptyTrip(today)
+    : createEmptyTrip(today);
+
+  return {
+    ...loadedState,
+    trips: catalog,
+    activeTripId,
+    trip: activeTrip,
+    activeCountryCode: activeTrip.countries[0]?.countryCode ?? loadedState.activeCountryCode ?? "",
+  };
+}
+
 function createInitialState(): TravelPlanState {
   const today = toIsoDate(new Date());
-  const franceEnd = addDays(today, 9);
-  const thailandStart = addDays(franceEnd, 1);
-  const thailandEnd = addDays(thailandStart, 18);
 
   const userId = generateUserId("traveler");
 
@@ -63,51 +140,9 @@ function createInitialState(): TravelPlanState {
         displayName: "Theo",
       },
     ],
-    trip: {
-      id: createEntityId("trip"),
-      title: "World Loop 2026",
-      startDate: today,
-      endDate: thailandEnd,
-      totalBudget: 12_000,
-      countries: [
-        {
-          countryCode: "FR",
-          countryName: "France",
-          currency: "EUR",
-          city: "Paris",
-          district: "11e",
-          startDate: today,
-          endDate: franceEnd,
-          budgetTotal: 2_100,
-          categoryBudgets: {
-            lodging: 900,
-            food: 420,
-            transport: 250,
-            flights: 120,
-            activities: 250,
-            other: 160,
-          },
-        },
-        {
-          countryCode: "TH",
-          countryName: "Thailand",
-          currency: "THB",
-          city: "Bangkok",
-          district: "Sukhumvit",
-          startDate: thailandStart,
-          endDate: thailandEnd,
-          budgetTotal: 3_900,
-          categoryBudgets: {
-            lodging: 1_400,
-            food: 850,
-            transport: 450,
-            flights: 500,
-            activities: 500,
-            other: 200,
-          },
-        },
-      ],
-    },
+    trips: [],
+    activeTripId: null,
+    trip: createEmptyTrip(today),
     expenses: [],
     forecasts: [],
     settings: {
@@ -128,7 +163,7 @@ function createInitialState(): TravelPlanState {
       currency: "EUR",
       updatedAt: nowIsoTimestamp(),
     },
-    activeCountryCode: "FR",
+    activeCountryCode: "",
     pendingBorderTransition: null,
   };
 }
@@ -150,13 +185,16 @@ function shiftCountryDates(state: TravelPlanState, fromIndex: number, offsetDays
     };
   });
 
+  const nextTrip = {
+    ...state.trip,
+    countries,
+    endDate: addDays(state.trip.endDate, offsetDays),
+  };
+
   return {
     ...state,
-    trip: {
-      ...state.trip,
-      countries,
-      endDate: addDays(state.trip.endDate, offsetDays),
-    },
+    trip: nextTrip,
+    trips: syncTripCatalog(state.trips, nextTrip),
   };
 }
 
@@ -182,7 +220,7 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
         }
 
         if (loadedState) {
-          setState(loadedState);
+          setState(normalizeLoadedState(loadedState));
         }
 
         setReady(true);
@@ -216,6 +254,42 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
     void storage.saveState(state);
   }, [ready, state, storage]);
 
+  const updateUserProfile = useCallback((profile: { id: string; displayName: string }) => {
+    const sanitized = ensureUserIdFormat(profile.id.startsWith("@") ? profile.id.slice(1) : profile.id);
+    const displayName = profile.displayName.trim() || sanitized.replace("@", "");
+
+    setState((prev) => {
+      const previousId = prev.user.id;
+      const travelerIndex = prev.travelers.findIndex(
+        (traveler) => traveler.id === previousId || traveler.id === sanitized,
+      );
+
+      const nextTravelers = [...prev.travelers];
+      if (travelerIndex >= 0) {
+        nextTravelers[travelerIndex] = {
+          ...nextTravelers[travelerIndex],
+          id: sanitized,
+          displayName,
+        };
+      } else {
+        nextTravelers.unshift({
+          id: sanitized,
+          displayName,
+        });
+      }
+
+      return {
+        ...prev,
+        user: {
+          ...prev.user,
+          id: sanitized,
+          displayName,
+        },
+        travelers: nextTravelers,
+      };
+    });
+  }, []);
+
   const updateUserId = useCallback((value: string) => {
     const sanitized = ensureUserIdFormat(value.startsWith("@") ? value.slice(1) : value);
 
@@ -237,18 +311,51 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
   }, []);
 
   const configureTrip = useCallback((input: SetupTripInput) => {
-    setState((prev) => ({
-      ...prev,
-      trip: {
-        ...prev.trip,
-        title: input.title,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        totalBudget: input.totalBudget,
-        countries: input.countries,
-      },
-      activeCountryCode: input.countries[0]?.countryCode ?? prev.activeCountryCode,
-    }));
+    setState((prev) => {
+      const activeTripId = prev.activeTripId ?? createEntityId("trip");
+      const nextTrip = buildTripFromSetup(input, activeTripId);
+
+      return {
+        ...prev,
+        trips: syncTripCatalog(prev.trips, nextTrip),
+        activeTripId,
+        trip: nextTrip,
+        activeCountryCode: nextTrip.countries[0]?.countryCode ?? "",
+        pendingBorderTransition: null,
+      };
+    });
+  }, []);
+
+  const createTrip = useCallback((input: SetupTripInput) => {
+    setState((prev) => {
+      const nextTrip = buildTripFromSetup(input, createEntityId("trip"));
+
+      return {
+        ...prev,
+        trips: [...prev.trips, nextTrip],
+        activeTripId: nextTrip.id,
+        trip: nextTrip,
+        activeCountryCode: nextTrip.countries[0]?.countryCode ?? "",
+        pendingBorderTransition: null,
+      };
+    });
+  }, []);
+
+  const switchTrip = useCallback((tripId: string) => {
+    setState((prev) => {
+      const selectedTrip = prev.trips.find((trip) => trip.id === tripId);
+      if (!selectedTrip) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        activeTripId: selectedTrip.id,
+        trip: selectedTrip,
+        activeCountryCode: selectedTrip.countries[0]?.countryCode ?? "",
+        pendingBorderTransition: null,
+      };
+    });
   }, []);
 
   const addTraveler = useCallback((travelerId: string) => {
@@ -290,6 +397,7 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
           expenses: [
             {
               id: createEntityId("expense"),
+              tripId: prev.activeTripId ?? undefined,
               amount: input.amount,
               currency: input.currency,
               amountInEuro,
@@ -325,6 +433,7 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
       forecasts: [
         {
           id: createEntityId("forecast"),
+          tripId: prev.activeTripId ?? undefined,
           amount: input.amount,
           currency: input.currency,
           amountInEuro: toEuro(input.amount, input.currency),
@@ -341,6 +450,13 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
 
   const detectBorderTransition = useCallback((geo: GeoContext) => {
     setState((prev) => {
+      if (!prev.activeTripId || prev.trip.countries.length === 0) {
+        return {
+          ...prev,
+          geo,
+        };
+      }
+
       if (geo.countryCode === prev.activeCountryCode) {
         return {
           ...prev,
@@ -444,8 +560,11 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
         };
       }
 
+      const syncedTrips = syncTripCatalog(nextState.trips, nextState.trip);
+
       return {
         ...nextState,
+        trips: syncedTrips,
         activeCountryCode: toCountryCode,
         pendingBorderTransition: null,
       };
@@ -500,8 +619,11 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
       state,
       ready,
       error,
+      updateUserProfile,
       updateUserId,
       configureTrip,
+      createTrip,
+      switchTrip,
       addTraveler,
       addExpense,
       addForecast,
@@ -517,13 +639,16 @@ export function TravelPlanProvider({ children }: Readonly<{ children: ReactNode 
       addTraveler,
       applyBorderTransition,
       configureTrip,
+      createTrip,
       dismissBorderTransition,
       error,
       ready,
       refreshLocation,
       state,
+      switchTrip,
       syncNow,
       updateSettings,
+      updateUserProfile,
       updateUserId,
     ],
   );
