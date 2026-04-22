@@ -96,11 +96,12 @@ function normalizeLoadedState(loadedState: TravelPlanState): TravelPlanState {
     activeTripId?: string | null;
   };
 
-  const catalog = Array.isArray(maybeLegacy.trips)
-    ? maybeLegacy.trips
-    : maybeLegacy.trip && maybeLegacy.trip.countries.length > 0
-      ? [maybeLegacy.trip]
-      : [];
+  let catalog: TripPlan[] = [];
+  if (Array.isArray(maybeLegacy.trips)) {
+    catalog = maybeLegacy.trips;
+  } else if (maybeLegacy.trip && maybeLegacy.trip.countries.length > 0) {
+    catalog = [maybeLegacy.trip];
+  }
 
   const activeTripId =
     maybeLegacy.activeTripId ??
