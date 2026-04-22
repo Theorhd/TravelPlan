@@ -9,6 +9,7 @@ on:
 jobs:
   build-ios:
     runs-on: macos-14
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -20,44 +21,183 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add iOS Rust targets
-        run: |
-          rustup target add aarch64-apple-ios
-          rustup target add aarch64-apple-ios-sim
-          rustup target add x86_64-apple-ios
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Initialize iOS project for Tauri
-        run: npm run tauri ios init -- --ci
-
-      - name: Build unsigned iOS app bundle
-        run: npm run tauri ios build -- --no-codesign
-
-      - name: Package unsigned .ipa
+      - name: Select Xcode
         shell: bash
         run: |
           set -euo pipefail
 
-          APP_PATH=$(find src-tauri/gen/apple/build -type d -name "TravelPlan.app" | head -n 1)
+          SELECTED_DEVELOPER_DIR=""
 
-          if [ -z "${APP_PATH}" ]; then
-            echo "TravelPlan.app not found"
-            find src-tauri/gen/apple -maxdepth 5 -type d -name "*.app" || true
+          if [ -d "/Applications/Xcode_16.4.app/Contents/Developer" ]; then
+            SELECTED_DEVELOPER_DIR="/Applications/Xcode_16.4.app/Contents/Developer"
+          else
+            LATEST_XCODE_APP=$(find /Applications -maxdepth 1 -type d -name 'Xcode_*.app' 2>/dev/null | sort -V | tail -n 1)
+            if [ -n "$LATEST_XCODE_APP" ] && [ -d "$LATEST_XCODE_APP/Contents/Developer" ]; then
+              SELECTED_DEVELOPER_DIR="$LATEST_XCODE_APP/Contents/Developer"
+            elif [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+              SELECTED_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+            fi
+          fi
+
+          if [ -n "$SELECTED_DEVELOPER_DIR" ] && [ -d "$SELECTED_DEVELOPER_DIR" ]; then
+            echo "Selecting Xcode at: $SELECTED_DEVELOPER_DIR"
+            sudo xcode-select -s "$SELECTED_DEVELOPER_DIR"
+          else
+            echo "No explicit Xcode app found in /Applications, using runner default Xcode"
+          fi
+
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Ensure xcodegen
+        run: |
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            echo "Installing xcodegen (attempt $attempt/3)"
+            brew install xcodegen && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "xcodegen installation failed after retries"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          xcodegen --version
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Init Tauri iOS project
+        run: npx tauri ios init --ci
+
+      - name: Force unsigned Xcode settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          PBXPROJ_PATH=$(find src-tauri/gen/apple -type f -name 'project.pbxproj' -print -quit)
+          if [ -z "$PBXPROJ_PATH" ]; then
+            echo "project.pbxproj not found under src-tauri/gen/apple"
             exit 1
           fi
 
-          rm -rf Payload
-          mkdir -p Payload
-          cp -R "${APP_PATH}" Payload/
-          zip -r TravelPlan-unsigned.ipa Payload
+          # Wiping out existing properties just in case
+          perl -0pi -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' "$PBXPROJ_PATH"
+          perl -0pi -e 's/CODE_SIGNING_ALLOWED = YES;/CODE_SIGNING_ALLOWED = NO;/g' "$PBXPROJ_PATH"
+          perl -0pi -e 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' "$PBXPROJ_PATH"
+          perl -0pi -e 's/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = "";/g' "$PBXPROJ_PATH"
+          perl -0pi -e 's/CODE_SIGN_IDENTITY = [^;]*;/CODE_SIGN_IDENTITY = "";/g' "$PBXPROJ_PATH"
+
+          # Forcefully inject NO-SIGNING into ALL buildSettings blocks
+          sed -i '' '/buildSettings = {/a \
+            CODE_SIGNING_ALLOWED = NO;\
+            CODE_SIGNING_REQUIRED = NO;\
+            CODE_SIGN_IDENTITY = "";\
+            CODE_SIGN_ENTITLEMENTS = "";\
+            DEVELOPMENT_TEAM = "";\
+            PROVISIONING_PROFILE_SPECIFIER = "";\
+          ' "$PBXPROJ_PATH"
+
+          echo "Patched signing settings in $PBXPROJ_PATH"
+
+      - name: Build metadata
+        id: meta
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "artifact_suffix=${GITHUB_RUN_NUMBER}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build iOS IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Create a wrapper script to intercept xcodebuild
+          mkdir -p xcodebuild_wrapper
+          cat > xcodebuild_wrapper/xcodebuild <<'EOF'
+          #!/bin/bash
+          echo "Intercepting xcodebuild '$@' with code signing overrides..."
+          exec /usr/bin/xcodebuild "$@" \
+            CODE_SIGN_STYLE="Manual" \
+            CODE_SIGNING_ALLOWED="NO" \
+            CODE_SIGNING_REQUIRED="NO" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            PROVISIONING_PROFILE="" \
+            AD_HOC_CODE_SIGN_ALLOWED="YES"
+          EOF
+          chmod +x xcodebuild_wrapper/xcodebuild
+
+          export PATH="$PWD/xcodebuild_wrapper:$PATH"
+
+          # We still use the xcconfig just in case
+          cat > src-tauri/gen/apple/ci-nosign.xcconfig <<'EOF'
+          CODE_SIGN_STYLE = Manual
+          CODE_SIGNING_ALLOWED = NO
+          CODE_SIGNING_REQUIRED = NO
+          DEVELOPMENT_TEAM =
+          PROVISIONING_PROFILE_SPECIFIER =
+          EOF
+          export XCODE_XCCONFIG_FILE="$PWD/src-tauri/gen/apple/ci-nosign.xcconfig"
+
+          CI=true npx tauri ios build --ci --export-method debugging || true
+
+      - name: Ensure IPA or Fallback to App Zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ios
+
+          # Find generated IPA safely
+          IPA_PATH=$(find src-tauri/gen/apple -type f -name '*.ipa' | head -n 1)
+          if [ -n "$IPA_PATH" ] && [ -f "$IPA_PATH" ]; then
+            cp "$IPA_PATH" artifacts/ios/TravelPlan-unsigned.ipa
+            echo "Successfully collected Tauri-generated IPA: $IPA_PATH"
+            exit 0
+          fi
+
+          echo "Tauri packaging into IPA failed or didn't run. Searching for .app directory to manually package..."
+          APP_PATH=$(find /Users/runner/Library/Developer/Xcode/DerivedData -type d -name "TravelPlan.app" | head -n 1)
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "TravelPlan.app not found. Trying any .app in release-iphoneos..."
+            APP_PATH=$(find /Users/runner/Library/Developer/Xcode/DerivedData -type d -name "*.app" -path "*/release-iphoneos/*" | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "No .app directory found. The build completely failed."
+            exit 1
+          fi
+
+          echo "Found .app directory at: $APP_PATH"
+          echo "Zipping .app directly into Payload/ for a pseudo-IPA..."
+
+          # Create IPA folder structure
+          mkdir -p IPA_BUILD/Payload
+          cp -R "$APP_PATH" "IPA_BUILD/Payload/"
+
+          # Zip the Payload directory
+          cd IPA_BUILD
+          zip -qr ../artifacts/ios/TravelPlan-unsigned.ipa Payload
+          cd ..
+          rm -rf IPA_BUILD
+
+          echo "Fallback IPA collected: artifacts/ios/TravelPlan-unsigned.ipa"
 
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TravelPlan-unsigned-ipa
-          path: TravelPlan-unsigned.ipa
+          name: TravelPlan-unsigned-ipa-${{ steps.meta.outputs.artifact_suffix }}
+          path: artifacts/ios/*.ipa
+          retention-days: 14
+          if-no-files-found: error
